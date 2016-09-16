@@ -1,4 +1,5 @@
-import strutils, asyncnet, asyncdispatch, ircconstants
+import strutils, asyncnet, asyncdispatch
+include ircconstants
 
 const CR = chr(0x0d)
 const LF = chr(0x0a)
@@ -14,6 +15,7 @@ type
     userName: string
     realName: string
     serverPass: string
+    status: IrcClientStatus
 
   IrcClient* = ref IrcClientBase
 
@@ -21,6 +23,12 @@ type
     prefix: string
     command: string
     args: seq[string]
+
+  IrcClientStatus* = enum
+    disconnected
+    connecting
+    connected
+    registered
 
 proc parsemsg(msg: string): ParsedMessage =
     #Breaks a message from an IRC server into its prefix, command, and arguments
@@ -56,6 +64,9 @@ proc sendNick*(client: IrcClient) =
 proc sendUser*(client: IrcClient) =
   asyncCheck client.send("USER $1 * 0 : $2" % [client.userName, client.realName])
 
+proc sendPong(client: IrcClient, servers: string) =
+  asyncCheck client.send("PONG " & servers)
+
 proc newIrcClient*(nick: string, serverPass: string = "", address: string, port: int=6667): IrcClient =
   new result
   result.socket = newAsyncSocket()
@@ -65,6 +76,7 @@ proc newIrcClient*(nick: string, serverPass: string = "", address: string, port:
   result.userName = "nimBotty"
   result.serverPass = "serverPass"
   result.port = port
+  result.status = IrcClientStatus.disconnected
 
 proc isNumericCommand(command: string): bool =
     if len(command) != 3:
@@ -74,9 +86,27 @@ proc isNumericCommand(command: string): bool =
         return false
     return true
 
+proc processMessage(client: IrcClient, msg: ParsedMessage) =
+  case msg.command
+  of "NOTICE":
+    echo "$1: $2" % [msg.prefix, msg.args[1]]
+  of "PING":
+    sendPong(client, join(msg.args, " "))
+  of RPL_WELCOME:
+    #just echo the welcome message
+    echo "$1: $2" % [msg.prefix, msg.args[1]]
+  of RPL_YOURHOST:
+    echo "$1: $2" % [msg.prefix, msg.args[1]]
+  of RPL_CREATED:
+    echo "$1: $2" % [msg.prefix, msg.args[1]]
+  else:
+    echo "unknown command \"$1\"" % [msg.command]
+
 proc aconnect(client: IrcClient){.async.} =
    echo "Connecting to ", client.address
+   client.status = IrcClientStatus.connecting
    await client.socket.connect(client.address, Port(client.port))
+   client.status = IrcClientStatus.connected
    echo "Connected!"
    client.sendPass()
    client.sendNick()
@@ -89,8 +119,9 @@ proc aconnect(client: IrcClient){.async.} =
      let parsed = parsemsg(line)
      #echo line
      echo "Prefix: $1, Command: $2, Args: $3" % [parsed.prefix, parsed.command, repr(parsed.args)]
-     if parsed.command.isNumericCommand():
-       echo "NUMERIC COMMAND: ", parsed.command
+     #if parsed.command.isNumericCommand():
+     echo "COMMAND: ", parsed.command
+     client.processMessage(parsed)
 
 proc connect*(client: IrcClient) =
   asyncCheck client.aconnect()
